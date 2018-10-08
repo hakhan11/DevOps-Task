@@ -1,0 +1,104 @@
+provider "aws" {
+access_key = "DFPIOU7TRFNMK8PTRGHK"                         #Dummy Key
+secret_key = "KcVHKrtP6WsCwCPEq98+jhytHHTEFFAFAQ"           #Dummy Key
+region = "eu-west-2"
+}
+
+resource "aws_security_group" "rabbitmq-sg" {
+  name = "rabbitmq-sg"
+  ingress {
+    from_port = 80
+    to_port = 80
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_instance" "rabbitmq1" {
+ami = "ami-01858f65"
+instance_type = "t2.small"
+key_name = "rabbitmq"                         #Already created using AWS Console
+tags {
+Name = "rabbitmq1"
+}
+provisioner "remote-exec" {
+inline = [
+        "sudo hostnamectl set-hostname rabbitmq1",
+        "echo '${aws_instance.rabbitmq1.private_ip} rabbitmq1' | sudo tee -a /etc/hosts",
+        "sudo service rabbitmq-server start",
+        "sudo rabbitmqctl stop_app",
+        "sudo rabbitmqctl reset",
+        "sudo rabbitmqctl start_app"
+       ]
+connection {
+    type = "ssh"
+    user = "ubuntu"
+    private_key = "${file("/opt/keys/rabbitmq.pem")}"
+    timeout = "4m"
+    agent = false
+}
+}
+}
+
+resource "aws_instance" "rabbitmq2" {
+ami = "ami-01858f65"
+instance_type = "t2.small"
+key_name = "rabbitmq"
+tags {
+Name = "rabbitmq2"
+}
+provisioner "remote-exec" {
+inline = [
+        "sudo hostnamectl set-hostname rabbitmq2",
+        "echo '${aws_instance.rabbitmq1.private_ip} rabbitmq1' | sudo tee -a /etc/hosts",        
+        "echo '${aws_instance.rabbitmq2.private_ip} rabbitmq2' | sudo tee -a /etc/hosts",
+        "sudo service rabbitmq-server start",
+        "sudo rabbitmqctl stop_app",
+        "sudo rabbitmqctl reset",
+        "sudo rabbitmqctl join_cluster --ram rabbit@rabbitmq1",
+        "sudo rabbitmqctl start_app"
+]
+connection {
+    type = "ssh"
+    user = "ubuntu"
+    private_key = "${file("/opt/keys/rabbitmq.pem")}"
+    timeout = "4m"
+    agent = false
+}
+}
+}
+
+resource "aws_elb" "elb" {
+  name                 = "rabbitmq-elb"
+  instances = ["${aws_instance.rabbitmq1.id}", "${aws_instance.rabbitmq2.id}"]
+  security_groups = ["${aws_security_group.rabbitmq-sg.id}"]  
+  availability_zones = ["eu-west-2b", "eu-west-2c"]
+
+  listener {
+    instance_port      = 5672
+    instance_protocol  = "tcp"
+    lb_port            = 5672
+    lb_protocol        = "tcp"
+  }
+
+  listener {
+    instance_port      = 15672
+    instance_protocol  = "http"
+    lb_port            = 80
+    lb_protocol        = "http"
+  }
+
+  health_check {
+    interval            = 30
+    unhealthy_threshold = 10
+    healthy_threshold   = 2
+    timeout             = 3
+    target              = "TCP:5672"
+  }
+}
